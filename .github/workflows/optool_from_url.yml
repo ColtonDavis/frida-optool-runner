@@ -17,16 +17,18 @@ jobs:
       - name: Checkout (empty repo)
         uses: actions/checkout@v4
 
-      - name: Install Homebrew & optool
+      - name: Install Python & gdown
         run: |
-          if ! command -v brew >/dev/null 2>&1; then
-            /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-            echo 'eval "$(/opt/homebrew/bin/brew shellenv)"' >> $GITHUB_ENV
-            eval "$(/opt/homebrew/bin/brew shellenv)"
-          fi
-          brew update || true
-          brew install optool python || true
-          python3 -m pip install gdown
+          brew install python || true
+          python3 -m pip install --upgrade pip gdown
+
+      - name: Download optool binary
+        run: |
+          curl -L https://github.com/alexzielenski/optool/releases/download/0.1/optool.zip -o optool.zip
+          unzip optool.zip
+          chmod +x optool
+          sudo mv optool /usr/local/bin/optool
+          optool --version || true
 
       - name: Prepare workdir
         run: mkdir workdir
@@ -58,7 +60,7 @@ jobs:
           APP=$(ls Payload | grep '\.app' | head -n1)
           EXEC=Payload/"$APP"/dfxm
           echo "Target executable: $EXEC"
-          optool install -c load -p @executable_path/Frameworks/frida-gadget-17.3.2-ios-universal.dylib -t "$EXEC"
+          /usr/local/bin/optool install -c load -p @executable_path/Frameworks/frida-gadget-17.3.2-ios-universal.dylib -t "$EXEC"
 
       - name: Repack IPA
         run: |
