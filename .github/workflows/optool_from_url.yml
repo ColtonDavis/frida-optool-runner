@@ -1,0 +1,116 @@
+name: optool-inject-from-url
+
+on:
+  workflow_dispatch:
+    inputs:
+      ipa_url:
+        description: 'Direct / shareable URL to crssplay_frida_localpatched.ipa (Google Drive / transfer.sh / Dropbox link)'
+        required: true
+        default: ''
+      dylib_url:
+        description: 'Direct / shareable URL to frida-gadget-17.3.2-ios-universal.dylib'
+        required: true
+        default: ''
+
+jobs:
+  optoolize:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout (empty repo)
+        uses: actions/checkout@v4
+
+      - name: Install Homebrew & optool
+        run: |
+          # bootstrap Homebrew if needed (some runners have brew preinstalled)
+          if ! command -v brew >/dev/null 2>&1; then
+            /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+            echo 'eval "$(/opt/homebrew/bin/brew shellenv)"' >> $GITHUB_ENV
+            eval "$(/opt/homebrew/bin/brew shellenv)"
+          fi
+          brew update || true
+          brew install optool python || true
+          optool --version || true
+          python3 -m pip install --upgrade pip
+          python3 -m pip install gdown
+
+      - name: Prepare working folder
+        run: |
+          mkdir workdir
+          cd workdir
+          echo "workspace: $(pwd)"
+          ls -la
+
+      - name: Download IPA and dylib using gdown/wget
+        run: |
+          cd workdir
+          echo "IPA URL: ${{ github.event.inputs.ipa_url }}"
+          echo "DYLIB URL: ${{ github.event.inputs.dylib_url }}"
+
+          # Try gdown (handles Google Drive share links / redirects)
+          python3 - <<'PY'
+import sys, subprocess, os
+ipa_url = os.environ.get("INPUT_IPA_URL") or os.environ.get("GITHUB_EVENT_INPUTS_IPA_URL") or os.environ.get("GITHUB_EVENT_INPUTS_IPAURL")
+dylib_url = os.environ.get("INPUT_DYLIB_URL") or os.environ.get("GITHUB_EVENT_INPUTS_DYLIB_URL") or os.environ.get("GITHUB_EVENT_INPUTS_DYLIBURL")
+ipa_url = ipa_url or os.environ.get("GITHUB_EVENT_PATH") and ""
+if not ipa_url:
+    ipa_url = os.environ.get("GITHUB_EVENT_INPUTS_IPA_URL") or os.environ.get("ipa_url")
+if not dylib_url:
+    dylib_url = os.environ.get("GITHUB_EVENT_INPUTS_DYLIB_URL") or os.environ.get("dylib_url")
+print("ipa_url:", ipa_url)
+print("dylib_url:", dylib_url)
+# download using gdown which supports google drive share links
+subprocess.run(["gdown", ipa_url, "-O", "crssplay_frida_localpatched.ipa"], check=True)
+subprocess.run(["gdown", dylib_url, "-O", "frida-gadget-17.3.2-ios-universal.dylib"], check=True)
+PY
+
+      - name: Show downloaded files
+        run: |
+          cd workdir
+          ls -la
+
+      - name: Unzip IPA
+        run: |
+          cd workdir
+          unzip -o crssplay_frida_localpatched.ipa -d work_unzip
+
+      - name: Ensure Frameworks exists and copy dylib (if not present)
+        run: |
+          cd workdir/work_unzip/Payload
+          APP=$(ls -1 | grep '\.app' | head -n1)
+          echo "App folder: $APP"
+          mkdir -p "$APP/Frameworks"
+          cp ../frida-gadget-17.3.2-ios-universal.dylib "$APP/Frameworks/" || true
+          ls -la "$APP/Frameworks"
+
+      - name: Inject LC_LOAD_DYLIB into dfxm (optool)
+        run: |
+          set -e
+          cd workdir/work_unzip
+          # find the app path
+          APP=$(ls Payload | grep '\.app' | head -n1)
+          echo "App: $APP"
+          EXEC=Payload/"$APP"/dfxm
+          echo "Target executable: $EXEC"
+          if [ ! -f "$EXEC" ]; then
+            echo "ERROR: expected executable Payload/$APP/dfxm not found."
+            ls -la Payload/"$APP"
+            exit 1
+          fi
+          optool install -c load -p @executable_path/Frameworks/frida-gadget-17.3.2-ios-universal.dylib -t "$EXEC"
+
+      - name: Repack IPA
+        run: |
+          cd workdir/work_unzip
+          zip -r -y ../crssplay_frida_optooled.ipa Payload
+          cd ..
+
+      - name: List resulting file
+        run: |
+          cd workdir
+          ls -la crssplay_frida_optooled.ipa || true
+
+      - name: Upload patched IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: crssplay_frida_optooled
+          path: workdir/crssplay_frida_optooled.ipa
